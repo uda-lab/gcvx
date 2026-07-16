@@ -1,0 +1,146 @@
+#!/bin/sh
+# gcvx-companion - thin bridge from the gcvx Claude Code plugin to the
+# Vertex-backed Claude agent over ACP.
+#
+# Usage:
+#   gcvx-companion rescue TASK...
+#   gcvx-companion review [--base REF]
+#   gcvx-companion adversarial-review [--base REF] [FOCUS...]
+#
+# The companion builds one prompt for the requested mode and hands it to
+# acpx, with `gcvx claude-acp` as the ACP agent command. It preserves the
+# current working directory, stdout, stderr, and the exit status of acpx.
+# It is not a job manager: background execution is the caller's concern
+# (Claude Code's native background Bash execution).
+#
+# Task and focus text is passed to acpx as a single argv element. It is
+# never interpolated into a shell command line.
+
+set -eu
+
+err() {
+    printf 'gcvx-companion: %s\n' "$*" >&2
+}
+
+usage() {
+    cat <<'EOF' >&2
+Usage:
+  gcvx-companion rescue TASK...
+  gcvx-companion review [--base REF]
+  gcvx-companion adversarial-review [--base REF] [FOCUS...]
+EOF
+}
+
+[ $# -ge 1 ] || { usage; exit 2; }
+
+mode=$1
+shift
+
+# The ACP agent command is deliberately fixed (see plan §18): replacing the
+# agent later means changing only this value and the prompts below.
+GCVX_BIN="${GCVX_BIN:-gcvx}"
+ACPX_BIN="${GCVX_ACPX_BIN:-acpx}"
+agent_cmd="$GCVX_BIN claude-acp"
+
+base=""
+
+run_acpx() {
+    # run_acpx <prompt> <permission-flag>...
+    _prompt=$1
+    shift
+    exec "$ACPX_BIN" \
+        --agent "$agent_cmd" \
+        --cwd "$PWD" \
+        --format text \
+        "$@" \
+        "$_prompt"
+}
+
+case $mode in
+    rescue)
+        [ $# -ge 1 ] || { err "rescue requires a task description"; usage; exit 2; }
+        task=$*
+        prompt="You are a delegated agent working directly in this repository.
+Complete the following task yourself: investigate, implement, and verify as
+needed. Make file changes when the task calls for them. Report what you did,
+what you found, and anything still unresolved.
+
+Task: $task"
+        # Write-capable by default: approve all permission requests.
+        run_acpx "$prompt" --approve-all
+        ;;
+
+    review)
+        scope="the uncommitted changes in the current working tree (use git status and git diff); if the working tree is clean, review the current branch's latest commit"
+        if [ $# -ge 1 ]; then
+            case $1 in
+                --base)
+                    [ $# -ge 2 ] || { err "--base requires a ref"; exit 2; }
+                    base=$2; shift 2 ;;
+                --base=*)
+                    base=${1#--base=}; shift ;;
+            esac
+        fi
+        [ $# -eq 0 ] || { err "unexpected argument for review: $1"; usage; exit 2; }
+        if [ -n "$base" ]; then
+            scope="the changes relative to base ref '$base' (use git diff $base...HEAD and git log $base..HEAD)"
+        fi
+        prompt="Perform a read-only code review of this repository.
+
+Scope: review $scope.
+
+Inspect the repository with normal read-only tools (git, file reads, searches).
+Report concrete findings: correctness bugs, risky edge cases, and meaningful
+quality issues, each with file and line references and a short rationale.
+State clearly if you find no significant issues.
+
+Do NOT modify any files. Do NOT apply fixes. Review only."
+        # Read-only posture: auto-approve reads, deny anything else.
+        run_acpx "$prompt" --approve-reads --non-interactive-permissions deny
+        ;;
+
+    adversarial-review)
+        if [ $# -ge 1 ]; then
+            case $1 in
+                --base)
+                    [ $# -ge 2 ] || { err "--base requires a ref"; exit 2; }
+                    base=$2; shift 2 ;;
+                --base=*)
+                    base=${1#--base=}; shift ;;
+            esac
+        fi
+        focus=$*
+        scope="the current working tree and recent changes"
+        if [ -n "$base" ]; then
+            scope="the changes relative to base ref '$base'"
+        fi
+        prompt="Perform a read-only adversarial review of this repository,
+focused on $scope.
+
+Do not merely hunt for code defects. Challenge the implementation direction
+itself:
+- Is the chosen design appropriate for the problem, or is there a simpler or
+  safer alternative?
+- What hidden assumptions does the implementation make, and when do they break?
+- Which trade-offs were taken implicitly, and are they defensible?
+- What failure modes, edge conditions, or operational risks are unhandled?
+
+Steelman the current approach first, then attack it. Be specific and cite
+files and lines where relevant. Conclude with the strongest objections and,
+if warranted, a recommended change of direction.
+
+Do NOT modify any files. Do NOT apply fixes. Review only."
+        if [ -n "$focus" ]; then
+            prompt="$prompt
+
+Requested focus: $focus"
+        fi
+        run_acpx "$prompt" --approve-reads --non-interactive-permissions deny
+        ;;
+
+    *)
+        err "unknown mode: $mode"
+        usage
+        exit 2
+        ;;
+esac

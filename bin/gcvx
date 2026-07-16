@@ -1,0 +1,303 @@
+#!/bin/sh
+# gcvx - thin Google Cloud Vertex AI execution wrapper for Claude Code.
+#
+# Subcommands:
+#   gcvx init         initial local setup
+#   gcvx doctor       read-only diagnostics
+#   gcvx claude ...   run the ordinary claude CLI through Vertex AI
+#   gcvx claude-acp   run the ACP agent (claude-agent-acp) through Vertex AI
+#
+# This wrapper only selects the provider and default model via environment
+# variables and then replaces itself with the real tool. It does not parse
+# Claude Code arguments, manage sessions, or add any runtime of its own.
+
+set -eu
+
+GCVX_VERSION="0.1.0"
+
+# GCVX_CONFIG_DIR may be overridden (used by tests).
+GCVX_CONFIG_DIR="${GCVX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gcvx}"
+GCVX_CONFIG_FILE="$GCVX_CONFIG_DIR/config"
+
+usage() {
+    cat <<'EOF'
+Usage: gcvx <subcommand> [arguments...]
+
+Subcommands:
+  init          Create the gcvx configuration and check dependencies
+  doctor        Run read-only diagnostics on the local setup
+  claude        Run the ordinary claude CLI backed by Google Cloud Vertex AI
+                (all remaining arguments are passed to claude unchanged)
+  claude-acp    Start the ACP agent (claude-agent-acp) backed by Vertex AI
+
+Configuration file: ~/.config/gcvx/config (see 'gcvx init')
+EOF
+}
+
+err() {
+    printf 'gcvx: %s\n' "$*" >&2
+}
+
+# ---------------------------------------------------------------------------
+# Configuration
+
+config_template() {
+    cat <<'EOF'
+# gcvx configuration.
+# This file is sourced by /bin/sh. Keep it to simple VAR="value" assignments.
+
+# Google Cloud project used for Vertex AI requests (required).
+GCVX_GCP_PROJECT_ID="__PROJECT__"
+
+# Vertex AI region. "global" is the default.
+GCVX_GCP_REGION="__REGION__"
+
+# Default Claude model for gcvx sessions. An explicit `--model` argument to
+# `gcvx claude` still overrides this, per Claude Code's own precedence.
+GCVX_CLAUDE_MODEL="__MODEL__"
+
+# Optional binary overrides.
+#GCVX_CLAUDE_BIN="claude"
+#GCVX_CLAUDE_ACP_BIN="claude-agent-acp"
+#GCVX_ACPX_BIN="acpx"
+EOF
+}
+
+load_config() {
+    if [ ! -r "$GCVX_CONFIG_FILE" ]; then
+        err "configuration not found at $GCVX_CONFIG_FILE"
+        err "run 'gcvx init' first"
+        exit 2
+    fi
+    # shellcheck disable=SC1090
+    . "$GCVX_CONFIG_FILE"
+    if [ -z "${GCVX_GCP_PROJECT_ID:-}" ]; then
+        err "GCVX_GCP_PROJECT_ID is not set in $GCVX_CONFIG_FILE"
+        exit 2
+    fi
+}
+
+export_vertex_env() {
+    export CLAUDE_CODE_USE_VERTEX=1
+    export ANTHROPIC_VERTEX_PROJECT_ID="$GCVX_GCP_PROJECT_ID"
+    export CLOUD_ML_REGION="${GCVX_GCP_REGION:-global}"
+    export ANTHROPIC_MODEL="${GCVX_CLAUDE_MODEL:-fable}"
+}
+
+# ---------------------------------------------------------------------------
+# gcvx claude
+
+run_claude() {
+    load_config
+    export_vertex_env
+    exec "${GCVX_CLAUDE_BIN:-claude}" "$@"
+}
+
+# ---------------------------------------------------------------------------
+# gcvx claude-acp
+#
+# ACP uses stdio transport: stdout belongs to the protocol. Nothing may be
+# printed to stdout here; wrapper diagnostics go to stderr before exec.
+
+run_claude_acp() {
+    load_config
+    export_vertex_env
+    exec "${GCVX_CLAUDE_ACP_BIN:-claude-agent-acp}" "$@"
+}
+
+# ---------------------------------------------------------------------------
+# gcvx init
+
+have() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+adc_file() {
+    if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
+        printf '%s\n' "$GOOGLE_APPLICATION_CREDENTIALS"
+    else
+        printf '%s\n' "${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}/application_default_credentials.json"
+    fi
+}
+
+prompt_value() {
+    # prompt_value "Question" "default" -> echoes chosen value
+    _q=$1 _d=$2
+    if [ -t 0 ]; then
+        printf '%s [%s]: ' "$_q" "$_d" >&2
+        read -r _a || _a=""
+        printf '%s\n' "${_a:-$_d}"
+    else
+        printf '%s\n' "$_d"
+    fi
+}
+
+run_init() {
+    mkdir -p "$GCVX_CONFIG_DIR"
+
+    if [ -e "$GCVX_CONFIG_FILE" ]; then
+        printf 'Configuration already exists at %s (not overwriting).\n' "$GCVX_CONFIG_FILE"
+    else
+        detected_project=""
+        if have gcloud; then
+            detected_project=$(gcloud config get-value project 2>/dev/null || true)
+            [ "$detected_project" = "(unset)" ] && detected_project=""
+        fi
+        project=$(prompt_value "Google Cloud project id" "${GCVX_GCP_PROJECT_ID:-$detected_project}")
+        region=$(prompt_value "Vertex AI region" "${GCVX_GCP_REGION:-global}")
+        model=$(prompt_value "Default Claude model" "${GCVX_CLAUDE_MODEL:-fable}")
+
+        config_template \
+            | sed -e "s|__PROJECT__|$project|" \
+                  -e "s|__REGION__|$region|" \
+                  -e "s|__MODEL__|$model|" \
+            > "$GCVX_CONFIG_FILE"
+        printf 'Wrote %s\n' "$GCVX_CONFIG_FILE"
+        if [ -z "$project" ]; then
+            printf 'NOTE: GCVX_GCP_PROJECT_ID is empty; edit %s before use.\n' "$GCVX_CONFIG_FILE"
+        fi
+    fi
+
+    printf '\nDependency check:\n'
+    for dep in gcloud claude claude-agent-acp acpx; do
+        if have "$dep"; then
+            printf '  ok       %s (%s)\n' "$dep" "$(command -v "$dep")"
+        else
+            printf '  missing  %s\n' "$dep"
+            case $dep in
+                gcloud)
+                    printf '           install: https://cloud.google.com/sdk/docs/install\n' ;;
+                claude)
+                    printf '           install: npm install -g @anthropic-ai/claude-code\n' ;;
+                claude-agent-acp)
+                    printf '           install: npm install -g @agentclientprotocol/claude-agent-acp\n' ;;
+                acpx)
+                    printf '           install: npm install -g acpx\n' ;;
+            esac
+        fi
+    done
+
+    printf '\nApplication Default Credentials:\n'
+    if [ -r "$(adc_file)" ]; then
+        printf '  ok       %s\n' "$(adc_file)"
+    else
+        printf '  missing  run: gcloud auth application-default login\n'
+    fi
+
+    printf '\nNext step: run '\''gcvx doctor'\'' to validate the setup.\n'
+}
+
+# ---------------------------------------------------------------------------
+# gcvx doctor
+
+DOCTOR_FAILED=0
+
+check() {
+    # check "label" "hint" command...
+    _label=$1 _hint=$2
+    shift 2
+    if "$@" >/dev/null 2>&1; then
+        printf '  ok       %s\n' "$_label"
+    else
+        printf '  FAIL     %s\n' "$_label"
+        [ -n "$_hint" ] && printf '           %s\n' "$_hint"
+        DOCTOR_FAILED=1
+    fi
+}
+
+doctor_acp_initialize() {
+    # Verify the ACP server responds to an `initialize` request over stdio.
+    # This spawns the agent but makes no model request.
+    _req='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false}}}}'
+    _out=$(printf '%s\n' "$_req" | timeout 20 "$0" claude-acp 2>/dev/null | head -n 1) || true
+    case $_out in
+        *'"result"'*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+run_doctor() {
+    printf 'gcvx doctor (read-only; no model requests are made)\n\n'
+
+    printf 'Configuration:\n'
+    if [ -r "$GCVX_CONFIG_FILE" ]; then
+        printf '  ok       config readable (%s)\n' "$GCVX_CONFIG_FILE"
+        # shellcheck disable=SC1090
+        . "$GCVX_CONFIG_FILE"
+        if [ -n "${GCVX_GCP_PROJECT_ID:-}" ]; then
+            printf '  ok       GCVX_GCP_PROJECT_ID=%s\n' "$GCVX_GCP_PROJECT_ID"
+        else
+            printf '  FAIL     GCVX_GCP_PROJECT_ID is not set\n'
+            DOCTOR_FAILED=1
+        fi
+    else
+        printf '  FAIL     config not found at %s (run: gcvx init)\n' "$GCVX_CONFIG_FILE"
+        DOCTOR_FAILED=1
+    fi
+
+    printf '\nGoogle Cloud:\n'
+    check "gcloud available" "install: https://cloud.google.com/sdk/docs/install" \
+        command -v gcloud
+    check "Application Default Credentials present" \
+        "run: gcloud auth application-default login" \
+        test -r "$(adc_file)"
+    if have gcloud && [ -n "${GCVX_GCP_PROJECT_ID:-}" ]; then
+        check "project '$GCVX_GCP_PROJECT_ID' visible" \
+            "check project id and permissions (gcloud projects describe)" \
+            gcloud projects describe "$GCVX_GCP_PROJECT_ID"
+    fi
+
+    printf '\nBinaries:\n'
+    check "claude available (${GCVX_CLAUDE_BIN:-claude})" \
+        "install: npm install -g @anthropic-ai/claude-code" \
+        command -v "${GCVX_CLAUDE_BIN:-claude}"
+    check "claude-agent-acp available (${GCVX_CLAUDE_ACP_BIN:-claude-agent-acp})" \
+        "install: npm install -g @agentclientprotocol/claude-agent-acp" \
+        command -v "${GCVX_CLAUDE_ACP_BIN:-claude-agent-acp}"
+    check "acpx available (${GCVX_ACPX_BIN:-acpx})" \
+        "install: npm install -g acpx" \
+        command -v "${GCVX_ACPX_BIN:-acpx}"
+
+    printf '\nLaunch:\n'
+    if [ -r "$GCVX_CONFIG_FILE" ] && [ -n "${GCVX_GCP_PROJECT_ID:-}" ]; then
+        if have "${GCVX_CLAUDE_BIN:-claude}"; then
+            check "gcvx claude --version launches" "" \
+                "$0" claude --version
+        fi
+        if have "${GCVX_CLAUDE_ACP_BIN:-claude-agent-acp}" && have timeout; then
+            check "gcvx claude-acp answers ACP initialize" \
+                "check claude-agent-acp installation and Vertex configuration" \
+                doctor_acp_initialize
+        fi
+    else
+        printf '  skip     launch checks (configuration incomplete)\n'
+    fi
+
+    if [ "$DOCTOR_FAILED" -ne 0 ]; then
+        printf '\nSome checks failed.\n'
+        exit 1
+    fi
+    printf '\nAll checks passed.\n'
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+
+[ $# -ge 1 ] || { usage >&2; exit 2; }
+
+subcommand=$1
+shift
+
+case $subcommand in
+    claude)      run_claude "$@" ;;
+    claude-acp)  run_claude_acp "$@" ;;
+    init)        run_init "$@" ;;
+    doctor)      run_doctor "$@" ;;
+    -h|--help|help) usage ;;
+    -V|--version|version) printf 'gcvx %s\n' "$GCVX_VERSION" ;;
+    *)
+        err "unknown subcommand: $subcommand"
+        usage >&2
+        exit 2
+        ;;
+esac

@@ -1,0 +1,18 @@
+# gcvx configuration.
+# Copy to ~/.config/gcvx/config (or run `gcvx init` to create it).
+# This file is sourced by /bin/sh. Keep it to simple VAR="value" assignments.
+
+# Google Cloud project used for Vertex AI requests (required).
+GCVX_GCP_PROJECT_ID="example-project"
+
+# Vertex AI region. "global" is the default.
+GCVX_GCP_REGION="global"
+
+# Default Claude model for gcvx sessions. An explicit `--model` argument to
+# `gcvx claude` still overrides this, per Claude Code's own precedence.
+GCVX_CLAUDE_MODEL="fable"
+
+# Optional binary overrides.
+#GCVX_CLAUDE_BIN="claude"
+#GCVX_CLAUDE_ACP_BIN="claude-agent-acp"
+#GCVX_ACPX_BIN="acpx"

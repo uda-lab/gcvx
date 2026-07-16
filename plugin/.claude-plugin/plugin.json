@@ -1,0 +1,5 @@
+{
+  "name": "gcvx",
+  "version": "0.1.0",
+  "description": "Delegate rescue and review work to a Google Cloud Vertex AI-backed Claude agent over ACP"
+}
