@@ -40,6 +40,7 @@ pwd > "$FAKE_OUT/pwd"
   echo "ANTHROPIC_VERTEX_PROJECT_ID=${ANTHROPIC_VERTEX_PROJECT_ID:-}"
   echo "CLOUD_ML_REGION=${CLOUD_ML_REGION:-}"
   echo "ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-}"
+  echo "CLAUDE_CODE_TEAMMATE_COMMAND=${CLAUDE_CODE_TEAMMATE_COMMAND:-}"
 } > "$FAKE_OUT/env"
 if [ ! -t 0 ]; then cat > "$FAKE_OUT/stdin"; fi
 echo "FAKE_CLAUDE_STDOUT"
@@ -132,6 +133,89 @@ assert_eq "ACP stdio round trip, no wrapper output on stdout" \
     '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"echo":"ok"}}' "$acp_out"
 assert_contains "ACP agent gets Vertex env" "$(cat "$FAKE_OUT/acp-env")" \
     "ANTHROPIC_VERTEX_PROJECT_ID=test-project"
+
+# ---------------------------------------------------------------------------
+echo "== gcvx claude-teammate (model policy) =="
+
+# The leader passes its chosen model on the teammate's argv, and argv beats
+# ANTHROPIC_MODEL. These assertions are the guard against a leader silently
+# billing an expensive model to Vertex.
+
+teammate_model_arg() { # teammate_model_arg <args...> -> value passed as --model
+    gcvx claude-teammate "$@" >/dev/null 2>&1 </dev/null
+    read_args "$FAKE_OUT/args"
+    local i
+    for ((i = 0; i < ${#recorded[@]}; i++)); do
+        case "${recorded[$i]}" in
+            --model)   printf '%s' "${recorded[$((i + 1))]}"; return ;;
+            --model=*) printf '%s' "${recorded[$i]#--model=}"; return ;;
+        esac
+    done
+}
+
+assert_eq "disallowed --model rewritten" "claude-sonnet-5" \
+    "$(teammate_model_arg --agent-id v@s --model fable --permission-mode auto)"
+assert_eq "disallowed --model=value rewritten" "claude-sonnet-5" \
+    "$(teammate_model_arg --model=opus --agent-type general-purpose)"
+assert_eq "trailing --model with no value gets the pinned model" "claude-sonnet-5" \
+    "$(teammate_model_arg --agent-name v --model)"
+assert_eq "allowed alias passes through" "sonnet" \
+    "$(teammate_model_arg --agent-id v@s --model sonnet)"
+assert_eq "allowed explicit id passes through" "claude-sonnet-5" \
+    "$(teammate_model_arg --model claude-sonnet-5)"
+
+out=$(gcvx claude-teammate --model fable 2>&1 </dev/null)
+assert_contains "rewrite warns on stderr" "$out" "teammate model 'fable' not allowed"
+
+gcvx claude-teammate --agent-id v@s --agent-name v --permission-mode auto \
+    >/dev/null 2>&1 </dev/null
+read_args "$FAKE_OUT/args"
+assert_eq "argv unchanged when the leader passed no --model" 6 "${#recorded[@]}"
+assert_eq "no --model injected when the leader passed none" "" \
+    "$(teammate_model_arg --agent-id v@s --agent-name v --permission-mode auto)"
+assert_contains "teammate model reaches env when argv is silent" \
+    "$(cat "$FAKE_OUT/env")" "ANTHROPIC_MODEL=claude-sonnet-5"
+
+gcvx claude-teammate -p 'multi word' --flag="a b" -- 'weird $arg; `x`' \
+    >/dev/null 2>&1 </dev/null
+read_args "$FAKE_OUT/args"
+assert_eq "non-model args survive the rewrite loop" 5 "${#recorded[@]}"
+assert_eq "quoted arg survives" "multi word" "${recorded[1]}"
+assert_eq "shell metachars survive" 'weird $arg; `x`' "${recorded[4]}"
+
+assert_contains "teammate gets Vertex env" "$(cat "$FAKE_OUT/env")" \
+    "CLAUDE_CODE_USE_VERTEX=1"
+
+# ---------------------------------------------------------------------------
+echo "== gcvx team (leader) =="
+
+launcher="$sandbox/fake-launcher"
+: > "$launcher"
+chmod +x "$launcher"
+
+GCVX_TEAMMATE_LAUNCHER="$launcher" gcvx team --resume >/dev/null 2>&1 </dev/null
+read_args "$FAKE_OUT/args"
+assert_eq "team forces tmux teammate mode" "--teammate-mode" "${recorded[0]}"
+assert_eq "team teammate mode value" "tmux" "${recorded[1]}"
+assert_eq "team forwards caller args" "--resume" "${recorded[2]}"
+
+env_value() { # env_value KEY -> value recorded by fake-claude
+    sed -n "s/^$1=//p" "$FAKE_OUT/env"
+}
+
+# The leader must stay on the caller's provider. If it ever picks up Vertex,
+# both sides are on Vertex and the subcommand has no reason to exist.
+assert_eq "leader keeps the caller's provider (no Vertex)" "" \
+    "$(env_value CLAUDE_CODE_USE_VERTEX)"
+assert_eq "leader inherits no Vertex project" "" \
+    "$(env_value ANTHROPIC_VERTEX_PROJECT_ID)"
+assert_eq "leader is pointed at the teammate launcher" "$launcher" \
+    "$(env_value CLAUDE_CODE_TEAMMATE_COMMAND)"
+
+out=$(GCVX_TEAMMATE_LAUNCHER="$sandbox/no-such-launcher" gcvx team 2>&1 </dev/null)
+status=$?
+assert_eq "missing launcher exits 2" 2 "$status"
+assert_contains "missing launcher message" "$out" "teammate launcher is missing"
 
 # ---------------------------------------------------------------------------
 echo "== error handling =="

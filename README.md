@@ -19,6 +19,7 @@ gcvx init          # initial local setup
 gcvx doctor        # read-only diagnostics (no model requests)
 gcvx claude [...]  # ordinary Claude Code CLI, backed by Vertex AI
 gcvx claude-acp    # ACP agent (claude-agent-acp), backed by Vertex AI
+gcvx team [...]    # Claude Code on your own provider, teammates on Vertex AI
 ```
 
 Claude Code plugin commands:
@@ -42,6 +43,28 @@ gcvx claude
         └── ordinary claude CLI
               └── Google Cloud Vertex AI
 ```
+
+Split-provider teams (`gcvx team`):
+
+```text
+gcvx team
+  └── ordinary claude CLI, on YOUR provider (e.g. a Claude subscription)
+        └── teammate spawned as a tmux pane
+              └── gcvx-teammate
+                    └── Vertex environment wrapper + model policy
+                          └── ordinary claude CLI
+                                └── Google Cloud Vertex AI
+```
+
+Claude Code runs tmux-mode teammates as separate processes, so the leader and
+its teammates can sit on different providers and credentials while keeping the
+in-session teammate protocol intact — teammates still appear in the team list,
+and `SendMessage` still reaches a running one. The leader deliberately keeps
+your own provider; only teammates go to Vertex.
+
+Requires `tmux`, and a leader started with `gcvx team` (the plain `claude`
+command spawns in-process teammates, which necessarily share the leader's
+provider).
 
 Plugin delegation (ACP is used only at the plugin-to-agent boundary):
 
@@ -95,6 +118,10 @@ GCVX_GCP_PROJECT_ID="example-project"   # required
 GCVX_GCP_REGION="global"                # default: global
 GCVX_CLAUDE_MODEL="fable"               # default: fable
 
+# Teammates spawned by `gcvx team`:
+GCVX_TEAMMATE_MODEL="claude-sonnet-5"
+GCVX_TEAMMATE_ALLOWED_MODELS="sonnet claude-sonnet-5"
+
 # Optional binary overrides:
 #GCVX_CLAUDE_BIN="claude"
 #GCVX_CLAUDE_ACP_BIN="claude-agent-acp"
@@ -125,6 +152,29 @@ The wrapper sets only `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`,
 `CLOUD_ML_REGION`, and `ANTHROPIC_MODEL` in the launched process. Your
 ordinary `claude` login and global settings are untouched, so subscription
 and Vertex use coexist.
+
+`gcvx team` starts a leader on your own provider and routes its teammates to
+Vertex:
+
+```sh
+gcvx team
+gcvx team --resume            # options pass through to claude
+```
+
+Teammate model policy is enforced in `gcvx claude-teammate`, not in prose,
+because Claude Code passes the leader's chosen model on the teammate's argv
+and argv beats `ANTHROPIC_MODEL`. Environment pinning alone would let a leader
+asking for an expensive model get it, billed to Vertex. A requested model
+outside `GCVX_TEAMMATE_ALLOWED_MODELS` is rewritten to `GCVX_TEAMMATE_MODEL`
+and a warning goes to stderr, which is visible in the teammate's pane. To let
+teammates reach another model, add both its alias and its explicit id to the
+allowlist — the leader may request either form.
+
+Teammate processes outlive their tmux pane: killing the window or the tmux
+session leaves them running, and they must be terminated explicitly. Each
+teammate also pays a full session startup cost (system prompt, CLAUDE.md,
+skills) on its first request, so many short-lived teammates are more expensive
+than their task sizes suggest.
 
 Plugin commands:
 

@@ -12,6 +12,17 @@ GCVX_GCP_REGION="global"
 # `gcvx claude` still overrides this, per Claude Code's own precedence.
 GCVX_CLAUDE_MODEL="fable"
 
+# Model used by Vertex-backed teammates spawned from `gcvx team`.
+# Teammates are spawned programmatically and can be numerous, so they get their
+# own, cheaper default rather than inheriting GCVX_CLAUDE_MODEL.
+GCVX_TEAMMATE_MODEL="claude-sonnet-5"
+
+# Models a teammate is permitted to run. Whitespace-separated; both aliases and
+# explicit ids must be listed, because the leader may request either. A model
+# outside this list is rewritten to GCVX_TEAMMATE_MODEL with a warning -- this
+# is what stops a leader from silently billing an expensive model to Vertex.
+GCVX_TEAMMATE_ALLOWED_MODELS="sonnet claude-sonnet-5"
+
 # Optional binary overrides.
 #GCVX_CLAUDE_BIN="claude"
 #GCVX_CLAUDE_ACP_BIN="claude-agent-acp"

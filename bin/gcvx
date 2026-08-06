@@ -2,18 +2,23 @@
 # gcvx - thin Google Cloud Vertex AI execution wrapper for Claude Code.
 #
 # Subcommands:
-#   gcvx init         initial local setup
-#   gcvx doctor       read-only diagnostics
-#   gcvx claude ...   run the ordinary claude CLI through Vertex AI
-#   gcvx claude-acp   run the ACP agent (claude-agent-acp) through Vertex AI
+#   gcvx init             initial local setup
+#   gcvx doctor           read-only diagnostics
+#   gcvx claude ...       run the ordinary claude CLI through Vertex AI
+#   gcvx claude-acp       run the ACP agent (claude-agent-acp) through Vertex AI
+#   gcvx team ...         run claude on the CALLER's provider, routing teammates
+#                         to Vertex
+#   gcvx claude-teammate  teammate entry point invoked by Claude Code
 #
 # This wrapper only selects the provider and default model via environment
 # variables and then replaces itself with the real tool. It does not parse
-# Claude Code arguments, manage sessions, or add any runtime of its own.
+# Claude Code arguments, manage sessions, or add any runtime of its own --
+# except in `claude-teammate`, which must rewrite --model to hold the teammate
+# model policy (see teammate_model_allowed).
 
 set -eu
 
-GCVX_VERSION="0.1.0"
+GCVX_VERSION="0.2.0"
 
 # GCVX_CONFIG_DIR may be overridden (used by tests).
 GCVX_CONFIG_DIR="${GCVX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gcvx}"
@@ -29,9 +34,30 @@ Subcommands:
   claude        Run the ordinary claude CLI backed by Google Cloud Vertex AI
                 (all remaining arguments are passed to claude unchanged)
   claude-acp    Start the ACP agent (claude-agent-acp) backed by Vertex AI
+  team          Run claude on the caller's own provider (e.g. an Anthropic
+                subscription) with teammates spawned as Vertex-backed tmux
+                panes. Requires tmux.
+  claude-teammate
+                Teammate entry point. Invoked by Claude Code via
+                CLAUDE_CODE_TEAMMATE_COMMAND, not normally by hand.
 
 Configuration file: ~/.config/gcvx/config (see 'gcvx init')
 EOF
+}
+
+# Absolute directory holding this script, used to locate sibling executables.
+# $0 may be relative, or a bare name resolved through PATH.
+gcvx_dir() {
+    _self=$0
+    case $_self in
+        */*) ;;
+        *) _self=$(command -v -- "$0" 2>/dev/null || printf '%s' "$0") ;;
+    esac
+    (CDPATH='' cd -- "$(dirname -- "$_self")" && pwd -P)
+}
+
+teammate_launcher() {
+    printf '%s\n' "${GCVX_TEAMMATE_LAUNCHER:-$(gcvx_dir)/gcvx-teammate}"
 }
 
 err() {
@@ -55,6 +81,17 @@ GCVX_GCP_REGION="__REGION__"
 # Default Claude model for gcvx sessions. An explicit `--model` argument to
 # `gcvx claude` still overrides this, per Claude Code's own precedence.
 GCVX_CLAUDE_MODEL="__MODEL__"
+
+# Model used by Vertex-backed teammates spawned from `gcvx team`.
+# Teammates are spawned programmatically and can be numerous, so they get their
+# own, cheaper default rather than inheriting GCVX_CLAUDE_MODEL.
+GCVX_TEAMMATE_MODEL="claude-sonnet-5"
+
+# Models a teammate is permitted to run. Whitespace-separated; both aliases and
+# explicit ids must be listed, because the leader may request either. A model
+# outside this list is rewritten to GCVX_TEAMMATE_MODEL with a warning -- this
+# is what stops a leader from silently billing an expensive model to Vertex.
+GCVX_TEAMMATE_ALLOWED_MODELS="sonnet claude-sonnet-5"
 
 # Optional binary overrides.
 #GCVX_CLAUDE_BIN="claude"
@@ -103,6 +140,105 @@ run_claude_acp() {
     load_config
     export_vertex_env
     exec "${GCVX_CLAUDE_ACP_BIN:-claude-agent-acp}" "$@"
+}
+
+# ---------------------------------------------------------------------------
+# gcvx team / gcvx claude-teammate
+#
+# `team` starts a leader session on whatever provider the caller already has
+# and points Claude Code's teammate launcher at `claude-teammate`, which is
+# Vertex-backed. Claude Code spawns tmux-mode teammates as separate processes,
+# so leader and teammates can sit on different providers and credentials while
+# keeping the in-session teammate protocol (SendMessage and the rest) intact.
+
+teammate_model() {
+    printf '%s\n' "${GCVX_TEAMMATE_MODEL:-claude-sonnet-5}"
+}
+
+teammate_model_allowed() {
+    # Word splitting on the allowlist is intended.
+    # shellcheck disable=SC2086
+    for _allowed in ${GCVX_TEAMMATE_ALLOWED_MODELS:-sonnet claude-sonnet-5}; do
+        [ "$1" = "$_allowed" ] && return 0
+    done
+    return 1
+}
+
+run_team() {
+    # NOTE: deliberately does NOT call export_vertex_env. The leader keeps the
+    # caller's provider (typically an Anthropic subscription); only teammates
+    # go to Vertex. Exporting Vertex here would put both sides on Vertex and
+    # defeat the entire purpose of this subcommand. The omission is the
+    # feature -- do not "fix" it.
+    #
+    # load_config still runs, so a broken configuration fails here rather than
+    # at the first teammate spawn, minutes into a session.
+    load_config
+
+    _launcher=$(teammate_launcher)
+    if [ ! -x "$_launcher" ]; then
+        err "teammate launcher is missing or not executable: $_launcher"
+        err "reinstall gcvx (scripts/install.sh)"
+        exit 2
+    fi
+
+    # Must be a single executable path: Claude Code validates the launcher as
+    # one, so a "gcvx claude-teammate" string would not do.
+    CLAUDE_CODE_TEAMMATE_COMMAND=$_launcher
+    export CLAUDE_CODE_TEAMMATE_COMMAND
+
+    exec "${GCVX_CLAUDE_BIN:-claude}" --teammate-mode tmux "$@"
+}
+
+run_claude_teammate() {
+    load_config
+
+    GCVX_CLAUDE_MODEL=$(teammate_model)
+    export_vertex_env
+
+    # Claude Code passes the leader's chosen model on the teammate's argv, and
+    # argv beats ANTHROPIC_MODEL. Pinning through the environment alone is
+    # therefore not enough: a leader asking for an expensive model would get
+    # it, billed to Vertex. Rewrite anything outside the allowlist.
+    _lock=$(teammate_model)
+    _argc=$#
+    _seen=0
+    while [ "$_seen" -lt "$_argc" ]; do
+        _arg=$1
+        shift
+        _seen=$((_seen + 1))
+        case $_arg in
+            --model)
+                _value=""
+                if [ "$_seen" -lt "$_argc" ]; then
+                    _value=$1
+                    shift
+                    _seen=$((_seen + 1))
+                fi
+                if [ -n "$_value" ] && teammate_model_allowed "$_value"; then
+                    set -- "$@" --model "$_value"
+                else
+                    [ -n "$_value" ] \
+                        && err "teammate model '$_value' not allowed; using '$_lock'"
+                    set -- "$@" --model "$_lock"
+                fi
+                ;;
+            --model=*)
+                _value=${_arg#--model=}
+                if teammate_model_allowed "$_value"; then
+                    set -- "$@" --model="$_value"
+                else
+                    err "teammate model '$_value' not allowed; using '$_lock'"
+                    set -- "$@" --model="$_lock"
+                fi
+                ;;
+            *)
+                set -- "$@" "$_arg"
+                ;;
+        esac
+    done
+
+    exec "${GCVX_CLAUDE_BIN:-claude}" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -273,6 +409,22 @@ run_doctor() {
         printf '  skip     launch checks (configuration incomplete)\n'
     fi
 
+    printf '\nTeammates (gcvx team):\n'
+    check "tmux available" "install tmux; 'gcvx team' spawns teammates as tmux panes" \
+        command -v tmux
+    check "teammate launcher executable ($(teammate_launcher))" \
+        "reinstall gcvx (scripts/install.sh)" \
+        test -x "$(teammate_launcher)"
+    if teammate_model_allowed "$(teammate_model)"; then
+        printf '  ok       teammate model %s (allowed: %s)\n' \
+            "$(teammate_model)" "${GCVX_TEAMMATE_ALLOWED_MODELS:-sonnet claude-sonnet-5}"
+    else
+        printf '  FAIL     teammate model %s is not in GCVX_TEAMMATE_ALLOWED_MODELS\n' \
+            "$(teammate_model)"
+        printf '           every teammate would be rewritten to a model you disallowed\n'
+        DOCTOR_FAILED=1
+    fi
+
     if [ "$DOCTOR_FAILED" -ne 0 ]; then
         printf '\nSome checks failed.\n'
         exit 1
@@ -291,6 +443,8 @@ shift
 case $subcommand in
     claude)      run_claude "$@" ;;
     claude-acp)  run_claude_acp "$@" ;;
+    team)        run_team "$@" ;;
+    claude-teammate) run_claude_teammate "$@" ;;
     init)        run_init "$@" ;;
     doctor)      run_doctor "$@" ;;
     -h|--help|help) usage ;;

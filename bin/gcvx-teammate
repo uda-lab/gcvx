@@ -1,0 +1,11 @@
+#!/bin/sh
+# Teammate launcher for `gcvx team`.
+#
+# Claude Code takes CLAUDE_CODE_TEAMMATE_COMMAND as a single executable path
+# and validates it as one, so the launcher cannot be spelled inline as the
+# string "gcvx claude-teammate". This file exists to give that path something
+# to point at; the policy itself lives in `gcvx claude-teammate`.
+
+set -eu
+
+exec "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)/gcvx" claude-teammate "$@"

@@ -5,6 +5,7 @@
 #
 # Installs:
 #   ~/.local/bin/gcvx                    the wrapper CLI
+#   ~/.local/bin/gcvx-teammate           teammate launcher for `gcvx team`
 #   ~/.config/gcvx/config.example       reference configuration
 #   ~/.local/share/gcvx/plugin/         the Claude Code plugin
 #
@@ -40,6 +41,14 @@ install_file() {
 }
 
 install_file "$repo_root/bin/gcvx" "$bin_dir/gcvx" 755
+
+# gcvx-teammate must sit next to gcvx: it locates gcvx relative to its own
+# path. It holds no user state, so it is always refreshed -- a stale copy
+# beside a fresh gcvx is worse than no copy at all.
+mkdir -p "$bin_dir"
+cp "$repo_root/bin/gcvx-teammate" "$bin_dir/gcvx-teammate"
+chmod 755 "$bin_dir/gcvx-teammate"
+printf 'install  %s\n' "$bin_dir/gcvx-teammate"
 install_file "$repo_root/config/config.example" "$config_dir/config.example" 644
 
 if [ -d "$plugin_dir" ] && [ "$force" -ne 1 ]; then

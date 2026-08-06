@@ -16,6 +16,7 @@ case "${1:-}" in
 esac
 
 bin="$HOME/.local/bin/gcvx"
+teammate_bin="$HOME/.local/bin/gcvx-teammate"
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/gcvx"
 share_dir="${XDG_DATA_HOME:-$HOME/.local/share}/gcvx"
 
@@ -27,6 +28,7 @@ remove() {
 }
 
 remove "$bin"
+remove "$teammate_bin"
 remove "$share_dir"
 
 if [ "$purge" -eq 1 ]; then
