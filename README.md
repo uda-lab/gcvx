@@ -8,9 +8,12 @@ Agent Client Protocol (ACP).
 [`acpx`](https://www.npmjs.com/package/acpx), or
 [`claude-agent-acp`](https://www.npmjs.com/package/@agentclientprotocol/claude-agent-acp)
 already provide. It only selects the provider (Vertex AI) and a default
-model via environment variables, then hands off to the real tools. The whole
-runtime is one wrapper script, one plugin companion script, and three command
-Markdown files.
+model via environment variables, then hands off to the real tools. The one
+exception is `claude-teammate`, which additionally rewrites `--model` on the
+argv it was handed — the model a teammate runs cannot be held by environment
+variables alone, because Claude Code passes it on argv and argv wins. The
+whole runtime is two wrapper scripts, one plugin companion script, and three
+command Markdown files.
 
 ## Command surface
 
@@ -96,8 +99,11 @@ gcvx init
 gcvx doctor
 ```
 
-This installs `~/.local/bin/gcvx`, a reference config example, and the
-plugin at `~/.local/share/gcvx/plugin`. Shell profiles are never modified.
+This installs `~/.local/bin/gcvx` and `~/.local/bin/gcvx-teammate`, a
+reference config example, and the plugin at `~/.local/share/gcvx/plugin`.
+Shell profiles are never modified. `gcvx-teammate` must stay beside `gcvx`:
+it locates `gcvx` relative to its own path, and `gcvx team` refuses to start
+without it.
 
 Load the plugin in Claude Code:
 
