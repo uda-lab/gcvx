@@ -118,7 +118,7 @@ export_vertex_env() {
     export CLAUDE_CODE_USE_VERTEX=1
     export ANTHROPIC_VERTEX_PROJECT_ID="$GCVX_GCP_PROJECT_ID"
     export CLOUD_ML_REGION="${GCVX_GCP_REGION:-global}"
-    export ANTHROPIC_MODEL="${GCVX_CLAUDE_MODEL:-fable}"
+    export ANTHROPIC_MODEL="${GCVX_CLAUDE_MODEL:-claude-opus-5-5}"
 }
 
 # ---------------------------------------------------------------------------
@@ -281,7 +281,7 @@ run_init() {
         fi
         project=$(prompt_value "Google Cloud project id" "${GCVX_GCP_PROJECT_ID:-$detected_project}")
         region=$(prompt_value "Vertex AI region" "${GCVX_GCP_REGION:-global}")
-        model=$(prompt_value "Default Claude model" "${GCVX_CLAUDE_MODEL:-fable}")
+        model=$(prompt_value "Default Claude model" "${GCVX_CLAUDE_MODEL:-claude-opus-5-5}")
 
         config_template \
             | sed -e "s|__PROJECT__|$project|" \
@@ -364,6 +364,14 @@ run_doctor() {
             printf '  ok       GCVX_GCP_PROJECT_ID=%s\n' "$GCVX_GCP_PROJECT_ID"
         else
             printf '  FAIL     GCVX_GCP_PROJECT_ID is not set\n'
+            DOCTOR_FAILED=1
+        fi
+        # gcvx <= 0.2.0 generated GCVX_CLAUDE_MODEL="fable". On Vertex that
+        # alias now resolves to a model the endpoint does not serve, and
+        # `gcvx init` never rewrites an existing config, so flag it here.
+        if [ "${GCVX_CLAUDE_MODEL:-}" = "fable" ]; then
+            printf '  FAIL     GCVX_CLAUDE_MODEL="fable" resolves to a model Vertex does not serve\n'
+            printf '           set GCVX_CLAUDE_MODEL="claude-opus-5-5" in %s\n' "$GCVX_CONFIG_FILE"
             DOCTOR_FAILED=1
         fi
     else
