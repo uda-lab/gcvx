@@ -10,7 +10,7 @@ GCVX_GCP_REGION="global"
 
 # Default Claude model for gcvx sessions. An explicit `--model` argument to
 # `gcvx claude` still overrides this, per Claude Code's own precedence.
-GCVX_CLAUDE_MODEL="fable"
+GCVX_CLAUDE_MODEL="claude-opus-5-5"
 
 # Model used by Vertex-backed teammates spawned from `gcvx team`.
 # Teammates are spawned programmatically and can be numerous, so they get their

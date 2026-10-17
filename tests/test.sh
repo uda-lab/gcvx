@@ -125,6 +125,13 @@ assert_contains "ANTHROPIC_MODEL set" "$env_dump" "ANTHROPIC_MODEL=fable"
 FAKE_EXIT=42 gcvx claude >/dev/null 2>&1 </dev/null
 assert_eq "exit status preserved (42)" 42 "$?"
 
+nomodelconf="$sandbox/nomodel-config"
+mkdir -p "$nomodelconf"
+grep -v '^GCVX_CLAUDE_MODEL=' "$confdir/config" > "$nomodelconf/config"
+GCVX_CONFIG_DIR="$nomodelconf" "$GCVX" claude >/dev/null 2>&1 </dev/null
+assert_contains "ANTHROPIC_MODEL defaults to claude-opus-5-5" \
+    "$(cat "$FAKE_OUT/env")" "ANTHROPIC_MODEL=claude-opus-5-5"
+
 # ---------------------------------------------------------------------------
 echo "== gcvx claude-acp =="
 
@@ -239,6 +246,8 @@ out=$(GCVX_CONFIG_DIR="$initconf" GCVX_GCP_PROJECT_ID="proj-from-env" \
       PATH="$fakebin:$PATH" "$GCVX" init </dev/null 2>&1)
 assert_contains "init creates config" "$(cat "$initconf/config" 2>/dev/null)" \
     'GCVX_GCP_PROJECT_ID="proj-from-env"'
+assert_contains "init writes default model" "$(cat "$initconf/config" 2>/dev/null)" \
+    'GCVX_CLAUDE_MODEL="claude-opus-5-5"'
 assert_contains "init reports next step" "$out" "gcvx doctor"
 
 echo "# user sentinel" >> "$initconf/config"

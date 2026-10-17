@@ -118,7 +118,7 @@ export_vertex_env() {
     export CLAUDE_CODE_USE_VERTEX=1
     export ANTHROPIC_VERTEX_PROJECT_ID="$GCVX_GCP_PROJECT_ID"
     export CLOUD_ML_REGION="${GCVX_GCP_REGION:-global}"
-    export ANTHROPIC_MODEL="${GCVX_CLAUDE_MODEL:-fable}"
+    export ANTHROPIC_MODEL="${GCVX_CLAUDE_MODEL:-claude-opus-5-5}"
 }
 
 # ---------------------------------------------------------------------------
@@ -281,7 +281,7 @@ run_init() {
         fi
         project=$(prompt_value "Google Cloud project id" "${GCVX_GCP_PROJECT_ID:-$detected_project}")
         region=$(prompt_value "Vertex AI region" "${GCVX_GCP_REGION:-global}")
-        model=$(prompt_value "Default Claude model" "${GCVX_CLAUDE_MODEL:-fable}")
+        model=$(prompt_value "Default Claude model" "${GCVX_CLAUDE_MODEL:-claude-opus-5-5}")
 
         config_template \
             | sed -e "s|__PROJECT__|$project|" \

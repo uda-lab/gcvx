@@ -33,7 +33,7 @@ Claude Code plugin commands:
 /gcvx:adversarial-review  challenge design direction and assumptions
 ```
 
-The default model is `fable`, but it is configuration, not part of any
+The default model is `claude-opus-5-5`, but it is configuration, not part of any
 command name.
 
 ## Architecture
@@ -122,7 +122,7 @@ file). It is plain shell, sourced by the wrapper:
 ```sh
 GCVX_GCP_PROJECT_ID="example-project"   # required
 GCVX_GCP_REGION="global"                # default: global
-GCVX_CLAUDE_MODEL="fable"               # default: fable
+GCVX_CLAUDE_MODEL="claude-opus-5-5"     # default: claude-opus-5-5
 
 # Teammates spawned by `gcvx team`:
 GCVX_TEAMMATE_MODEL="claude-sonnet-5"
