@@ -366,6 +366,14 @@ run_doctor() {
             printf '  FAIL     GCVX_GCP_PROJECT_ID is not set\n'
             DOCTOR_FAILED=1
         fi
+        # gcvx <= 0.2.0 generated GCVX_CLAUDE_MODEL="fable". On Vertex that
+        # alias now resolves to a model the endpoint does not serve, and
+        # `gcvx init` never rewrites an existing config, so flag it here.
+        if [ "${GCVX_CLAUDE_MODEL:-}" = "fable" ]; then
+            printf '  FAIL     GCVX_CLAUDE_MODEL="fable" resolves to a model Vertex does not serve\n'
+            printf '           set GCVX_CLAUDE_MODEL="claude-opus-5-5" in %s\n' "$GCVX_CONFIG_FILE"
+            DOCTOR_FAILED=1
+        fi
     else
         printf '  FAIL     config not found at %s (run: gcvx init)\n' "$GCVX_CONFIG_FILE"
         DOCTOR_FAILED=1
